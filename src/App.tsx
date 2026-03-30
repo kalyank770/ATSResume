@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useRef, type ChangeEvent } from 'react';
+import { useState, useRef } from 'react';
 import { GoogleGenAI } from '@google/genai';
-import { Upload, FileText, Image as ImageIcon, Loader2, Download, Printer, AlertCircle } from 'lucide-react';
+import { Upload, FileText, Image as ImageIcon, Loader2, Download, Printer, AlertCircle, Code, Eye } from 'lucide-react';
 
 export default function App() {
   const [resumeFile, setResumeFile] = useState<File | null>(null);
@@ -13,11 +13,12 @@ export default function App() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedHtml, setGeneratedHtml] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'preview' | 'code'>('preview');
 
   const resumeInputRef = useRef<HTMLInputElement>(null);
   const templateInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFileChange = (e: ChangeEvent<HTMLInputElement>, type: 'resume' | 'template') => {
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'resume' | 'template') => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -47,69 +48,61 @@ export default function App() {
       return;
     }
 
-    const apiKey =
-      (import.meta.env.VITE_GEMINI_API_KEY as string | undefined) ||
-      (process.env.GEMINI_API_KEY as string | undefined);
-    const model = (import.meta.env.VITE_GEMINI_MODEL as string | undefined) || 'gemini-2.5-flash';
-
-    if (!apiKey) {
-      setError(
-        'Missing Gemini API key. Create ATSResume/.env.local with GEMINI_API_KEY=your_key (or VITE_GEMINI_API_KEY=your_key), then restart npm run dev.'
-      );
-      return;
-    }
-
     setIsGenerating(true);
     setError(null);
     setGeneratedHtml(null);
+    setActiveTab('preview');
 
     try {
-      const ai = new GoogleGenAI({ apiKey });
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       const resumeBase64 = await fileToBase64(resumeFile);
       const templateBase64 = await fileToBase64(templateFile);
 
-      const prompt = `I am providing two files:
+      const prompt = `You are an expert frontend developer and UI/UX designer.
+I am providing two files:
 1. My current resume (document or image).
 2. A template design (image).
 
-Your task is to extract all the text and information from my resume, and then write a complete, single-file HTML document that perfectly replicates the visual design, layout, typography, and color scheme of the template image, populated with my information.
+Your task is to create a PIXEL-PERFECT HTML/CSS replica of the template design, but populated with the real information from my resume.
 
 CRITICAL REQUIREMENTS:
-- Output ONLY valid HTML code. Do NOT wrap it in markdown blocks (no \`\`\`html).
-- Use embedded CSS (<style>) for all styling. Do NOT use external CSS frameworks.
-- Ensure the layout is optimized for an A4/Letter portrait aspect ratio (e.g., 210mm width, 297mm height).
-- Use standard web-safe fonts or import Google Fonts that match the template.
-- Ensure good contrast and professional spacing.
-- Include all relevant sections from my resume (Experience, Education, Skills, etc.) adapting them to fit the template's structure.
-- Ensure the background colors and structural elements (columns, headers, dividers) match the template exactly.
-- Make sure the HTML is completely self-contained.`;
+1. VISUAL CLONE: The output must look EXACTLY like the template image. Extract and use the exact background colors, text colors, font sizes, and font weights.
+2. LAYOUT: Use modern CSS (Flexbox/Grid) to perfectly replicate the columns, margins, padding, and alignment of the template. Pay close attention to the spacing between sections.
+3. TYPOGRAPHY: Import matching Google Fonts (e.g., Roboto, Open Sans, Lato, Montserrat) via @import in the CSS to match the template's typography.
+4. CONTENT: Use the text from my resume, but format it to fit the template's structure. If the template has a specific way of showing skills (e.g., progress bars, tags), replicate that visual style using HTML/CSS.
+5. STYLING: Use embedded CSS (<style>) within the HTML. Do NOT use Tailwind or external CSS frameworks.
+6. DIMENSIONS: The layout must be optimized for an A4 portrait aspect ratio (210mm x 297mm). Ensure the content fits well within these dimensions.
+7. FORMAT: Output ONLY the raw HTML code. Do NOT wrap it in markdown blocks (no \`\`\`html). Start directly with <!DOCTYPE html>.`;
 
       const response = await ai.models.generateContent({
-        model,
+        model: 'gemini-3.1-pro-preview',
         contents: {
           parts: [
             { inlineData: { data: resumeBase64, mimeType: resumeFile.type } },
             { inlineData: { data: templateBase64, mimeType: templateFile.type } },
             { text: prompt }
           ]
+        },
+        config: {
+          systemInstruction: "You are an expert frontend developer. Your goal is to write pixel-perfect HTML and CSS that exactly matches the provided design template, using the provided resume content. Output ONLY raw HTML.",
+          temperature: 0.2, // Lower temperature for more deterministic, precise code generation
         }
       });
 
       let html = response.text || '';
-      // Clean up markdown formatting if the model still includes it
-      html = html.replace(/^```html\n?/i, '').replace(/\n?```$/i, '').trim();
+      
+      // Robust HTML extraction to handle markdown wrappers if the model still includes them
+      const match = html.match(/```(?:html)?\s*([\s\S]*?)\s*```/i);
+      if (match) {
+        html = match[1];
+      } else {
+        html = html.replace(/^```html\n?/i, '').replace(/\n?```$/i, '').trim();
+      }
       
       setGeneratedHtml(html);
     } catch (err: any) {
       console.error('Generation error:', err);
-      const message = String(err?.message || '');
-      if (message.includes('RESOURCE_EXHAUSTED') || message.includes('quota') || message.includes('429')) {
-        setError(
-          'Gemini quota exceeded for the selected model. Use a free-tier model by setting VITE_GEMINI_MODEL=gemini-2.5-flash in ATSResume/.env.local, wait for quota reset, or upgrade billing in Google AI Studio.'
-        );
-      } else {
-        setError(err.message || 'An error occurred while generating the resume.');
-      }
+      setError(err.message || 'An error occurred while generating the resume.');
     } finally {
       setIsGenerating(false);
     }
@@ -253,23 +246,58 @@ CRITICAL REQUIREMENTS:
             )}
           </div>
 
-          {/* Right Column: Preview */}
-          <div className="lg:col-span-8">
-            <div className="bg-gray-200/50 rounded-xl p-4 sm:p-8 min-h-[800px] flex justify-center overflow-x-auto border border-gray-200 print:p-0 print:border-none print:bg-transparent">
+          {/* Right Column: Preview / Code Editor */}
+          <div className="lg:col-span-8 flex flex-col h-full">
+            {generatedHtml && (
+              <div className="flex items-center gap-2 mb-4 print:hidden">
+                <button
+                  onClick={() => setActiveTab('preview')}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    activeTab === 'preview' 
+                      ? 'bg-white text-gray-900 shadow-sm border border-gray-200' 
+                      : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  <Eye className="h-4 w-4" />
+                  Preview
+                </button>
+                <button
+                  onClick={() => setActiveTab('code')}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    activeTab === 'code' 
+                      ? 'bg-white text-gray-900 shadow-sm border border-gray-200' 
+                      : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  <Code className="h-4 w-4" />
+                  Edit HTML/CSS
+                </button>
+              </div>
+            )}
+
+            <div className="bg-gray-200/50 rounded-xl p-4 sm:p-8 flex-grow flex justify-center overflow-x-auto border border-gray-200 print:p-0 print:border-none print:bg-transparent">
               {generatedHtml ? (
-                <div 
-                  id="printable-resume"
-                  className="bg-white shadow-2xl print:shadow-none"
-                  style={{ 
-                    width: '210mm', 
-                    minHeight: '297mm',
-                    // Scale down slightly on smaller screens for preview, but keep actual dimensions
-                    transformOrigin: 'top center',
-                  }}
-                  dangerouslySetInnerHTML={{ __html: generatedHtml }}
-                />
+                activeTab === 'preview' ? (
+                  <div 
+                    id="printable-resume"
+                    className="bg-white shadow-2xl print:shadow-none"
+                    style={{ 
+                      width: '210mm', 
+                      minHeight: '297mm',
+                      transformOrigin: 'top center',
+                    }}
+                    dangerouslySetInnerHTML={{ __html: generatedHtml }}
+                  />
+                ) : (
+                  <textarea
+                    value={generatedHtml}
+                    onChange={(e) => setGeneratedHtml(e.target.value)}
+                    className="w-full h-full min-h-[800px] p-4 font-mono text-sm bg-gray-900 text-gray-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    spellCheck={false}
+                  />
+                )
               ) : (
-                <div className="flex flex-col items-center justify-center text-gray-400 h-full print:hidden">
+                <div className="flex flex-col items-center justify-center text-gray-400 h-full min-h-[800px] print:hidden">
                   <FileText className="h-16 w-16 mb-4 opacity-20" />
                   <p className="text-lg font-medium">Preview will appear here</p>
                   <p className="text-sm mt-2">Upload your files and click Generate</p>
