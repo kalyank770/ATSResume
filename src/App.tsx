@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useRef } from 'react';
+import { useState, useRef, type ChangeEvent } from 'react';
 import { GoogleGenAI } from '@google/genai';
 import { Upload, FileText, Image as ImageIcon, Loader2, Download, Printer, AlertCircle } from 'lucide-react';
 
@@ -17,7 +17,7 @@ export default function App() {
   const resumeInputRef = useRef<HTMLInputElement>(null);
   const templateInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'resume' | 'template') => {
+  const handleFileChange = (e: ChangeEvent<HTMLInputElement>, type: 'resume' | 'template') => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -47,12 +47,24 @@ export default function App() {
       return;
     }
 
+    const apiKey =
+      (import.meta.env.VITE_GEMINI_API_KEY as string | undefined) ||
+      (process.env.GEMINI_API_KEY as string | undefined);
+    const model = (import.meta.env.VITE_GEMINI_MODEL as string | undefined) || 'gemini-2.5-flash';
+
+    if (!apiKey) {
+      setError(
+        'Missing Gemini API key. Create ATSResume/.env.local with GEMINI_API_KEY=your_key (or VITE_GEMINI_API_KEY=your_key), then restart npm run dev.'
+      );
+      return;
+    }
+
     setIsGenerating(true);
     setError(null);
     setGeneratedHtml(null);
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const ai = new GoogleGenAI({ apiKey });
       const resumeBase64 = await fileToBase64(resumeFile);
       const templateBase64 = await fileToBase64(templateFile);
 
@@ -73,7 +85,7 @@ CRITICAL REQUIREMENTS:
 - Make sure the HTML is completely self-contained.`;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-3.1-pro-preview',
+        model,
         contents: {
           parts: [
             { inlineData: { data: resumeBase64, mimeType: resumeFile.type } },
@@ -90,7 +102,14 @@ CRITICAL REQUIREMENTS:
       setGeneratedHtml(html);
     } catch (err: any) {
       console.error('Generation error:', err);
-      setError(err.message || 'An error occurred while generating the resume.');
+      const message = String(err?.message || '');
+      if (message.includes('RESOURCE_EXHAUSTED') || message.includes('quota') || message.includes('429')) {
+        setError(
+          'Gemini quota exceeded for the selected model. Use a free-tier model by setting VITE_GEMINI_MODEL=gemini-2.5-flash in ATSResume/.env.local, wait for quota reset, or upgrade billing in Google AI Studio.'
+        );
+      } else {
+        setError(err.message || 'An error occurred while generating the resume.');
+      }
     } finally {
       setIsGenerating(false);
     }
