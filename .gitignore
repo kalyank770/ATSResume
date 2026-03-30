@@ -6,7 +6,3 @@ coverage/
 *.log
 .env*
 !.env.example
-# Ignore environment variables
-.env
-.env.local
-.env.production

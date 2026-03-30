@@ -3,114 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useRef, type ChangeEvent } from 'react';
+import { useState, useRef } from 'react';
 import { GoogleGenAI } from '@google/genai';
 import { Upload, FileText, Image as ImageIcon, Loader2, Download, Printer, AlertCircle, Code, Eye } from 'lucide-react';
-
-const MAX_QUOTA_RETRIES = 1;
-const TARGET_MODEL_DISPLAY_NAME = 'Gemma 3 27B';
-const TARGET_MODEL_API_IDS = ['gemma-3-27b-it'];
-const SYSTEM_INSTRUCTION = 'You are an expert frontend developer. Your goal is to write pixel-perfect HTML and CSS that exactly matches the provided design template, using the provided resume content. Output ONLY raw HTML.';
-
-const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const extractErrorMessage = (err: unknown): string => {
-  if (!err) return '';
-  if (typeof err === 'string') return err;
-  if (err instanceof Error) return err.message;
-
-  try {
-    return JSON.stringify(err);
-  } catch {
-    return String(err);
-  }
-};
-
-const isQuotaExceededError = (message: string): boolean => {
-  return /resource_exhausted|quota exceeded|status.?"?\s*:\s*"?resource_exhausted|\b429\b/i.test(message);
-};
-
-const extractRetryDelayMs = (message: string): number | null => {
-  const retryInSeconds = message.match(/retry in\s+([\d.]+)s/i);
-  if (retryInSeconds?.[1]) {
-    return Math.ceil(Number(retryInSeconds[1]) * 1000);
-  }
-
-  const retryDelayField = message.match(/"retryDelay"\s*:\s*"([\d.]+)s"/i);
-  if (retryDelayField?.[1]) {
-    return Math.ceil(Number(retryDelayField[1]) * 1000);
-  }
-
-  return null;
-};
-
-const normalizeModelName = (modelName?: string): string => {
-  if (!modelName) return '';
-
-  const trimmed = modelName.trim();
-  const lower = trimmed.toLowerCase();
-
-  if (lower.startsWith('models/')) {
-    return trimmed.slice('models/'.length);
-  }
-
-  const modelsSegment = /\/models\/([^/]+)$/i.exec(trimmed);
-  if (modelsSegment?.[1]) {
-    return modelsSegment[1];
-  }
-
-  const slashParts = trimmed.split('/').filter(Boolean);
-  if (slashParts.length > 0) {
-    return slashParts[slashParts.length - 1];
-  }
-
-  return trimmed;
-};
-
-const isTargetModel = (name?: string, displayName?: string): boolean => {
-  const normalizedName = normalizeModelName(name);
-  const normalizedDisplayName = (displayName || '').trim().toLowerCase();
-
-  return normalizedDisplayName === TARGET_MODEL_DISPLAY_NAME.toLowerCase() || TARGET_MODEL_API_IDS.includes(normalizedName.toLowerCase());
-};
-
-const isValidGeminiModelId = (modelId: string): boolean => {
-  return /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/i.test(modelId);
-};
-
-const getModelFormatCandidates = (modelId: string): string[] => {
-  return [
-    modelId,
-    `models/${modelId}`,
-    `google/${modelId}`,
-    `publishers/google/models/${modelId}`,
-  ];
-};
-
-const supportsDeveloperInstruction = (modelName: string): boolean => {
-  return !/gemma/i.test(modelName);
-};
-
-const formatGenerationError = (err: unknown): string => {
-  const message = extractErrorMessage(err);
-
-  if (isQuotaExceededError(message)) {
-    const retryMs = extractRetryDelayMs(message);
-    const retryText = retryMs ? ` Wait about ${Math.ceil(retryMs / 1000)} seconds and try again.` : '';
-
-    return `Gemini quota is exhausted for the current key/project.${retryText} If it keeps failing, check Google AI Studio quota limits and billing, or use a model with available quota (for example gemini-2.5-flash).`;
-  }
-
-  if (/api key|unauthenticated|permission denied|forbidden|401|403/i.test(message)) {
-    return 'Gemini authentication failed. Verify GEMINI_API_KEY in your .env.local and ensure that key has access to the selected model.';
-  }
-
-  if (/generatecontentrequest\.model|unexpected model name format/i.test(message)) {
-    return 'Invalid model name format for the selected Gemma model. The app is now trying multiple valid Gemma model formats automatically.';
-  }
-
-  return message || 'An error occurred while generating the resume.';
-};
 
 export default function App() {
   const [resumeFile, setResumeFile] = useState<File | null>(null);
@@ -122,8 +17,9 @@ export default function App() {
 
   const resumeInputRef = useRef<HTMLInputElement>(null);
   const templateInputRef = useRef<HTMLInputElement>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
 
-  const handleFileChange = (e: ChangeEvent<HTMLInputElement>, type: 'resume' | 'template') => {
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'resume' | 'template') => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -164,9 +60,9 @@ export default function App() {
       const templateBase64 = await fileToBase64(templateFile);
 
       const prompt = `You are an expert frontend developer and UI/UX designer.
-I am providing two files:
-1. My current resume (document or image).
-2. A template design (image).
+I have provided two files above:
+1. My current resume.
+2. A template design.
 
 Your task is to create a PIXEL-PERFECT HTML/CSS replica of the template design, but populated with the real information from my resume.
 
@@ -175,108 +71,26 @@ CRITICAL REQUIREMENTS:
 2. LAYOUT: Use modern CSS (Flexbox/Grid) to perfectly replicate the columns, margins, padding, and alignment of the template. Pay close attention to the spacing between sections.
 3. TYPOGRAPHY: Import matching Google Fonts (e.g., Roboto, Open Sans, Lato, Montserrat) via @import in the CSS to match the template's typography.
 4. CONTENT: Use the text from my resume, but format it to fit the template's structure. If the template has a specific way of showing skills (e.g., progress bars, tags), replicate that visual style using HTML/CSS.
-5. STYLING: Use embedded CSS (<style>) within the HTML. Do NOT use Tailwind or external CSS frameworks.
+5. STYLING: Use embedded CSS (<style>) within the HTML. Do NOT use Tailwind or external CSS frameworks. Include a basic CSS reset in your styles so it renders consistently.
 6. DIMENSIONS: The layout must be optimized for an A4 portrait aspect ratio (210mm x 297mm). Ensure the content fits well within these dimensions.
 7. FORMAT: Output ONLY the raw HTML code. Do NOT wrap it in markdown blocks (no \`\`\`html). Start directly with <!DOCTYPE html>.`;
 
-      const requestContents = {
-        parts: [
-          { inlineData: { data: resumeBase64, mimeType: resumeFile.type } },
-          { inlineData: { data: templateBase64, mimeType: templateFile.type } },
-          { text: prompt }
-        ]
-      };
-
-      const pager = await ai.models.list({ config: { pageSize: 100 } });
-      const availableModels = [...pager.page];
-      while (pager.hasNextPage()) {
-        const nextPage = await pager.nextPage();
-        availableModels.push(...nextPage);
-      }
-
-      const modelCatalog = availableModels.map((m) => ({
-        name: m.name || '(no-name)',
-        displayName: m.displayName || '(no-display-name)',
-        supportedActions: m.supportedActions || [],
-      }));
-      console.log('Available Gemini models:', modelCatalog);
-
-      const matchedModel = availableModels.find((m) => {
-        const supportsGenerateContent = (m.supportedActions || []).includes('generateContent');
-        return supportsGenerateContent && isTargetModel(m.name, m.displayName);
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.1-pro-preview',
+        contents: {
+          parts: [
+            { text: "--- MY CURRENT RESUME ---" },
+            { inlineData: { data: resumeBase64, mimeType: resumeFile.type } },
+            { text: "--- THE TEMPLATE DESIGN TO REPLICATE ---" },
+            { inlineData: { data: templateBase64, mimeType: templateFile.type } },
+            { text: prompt }
+          ]
+        },
+        config: {
+          systemInstruction: "You are an expert frontend developer. Your goal is to write pixel-perfect HTML and CSS that exactly matches the provided design template, using the provided resume content. Output ONLY raw HTML.",
+          temperature: 0.2, // Lower temperature for more deterministic, precise code generation
+        }
       });
-
-      if (!matchedModel?.name) {
-        throw new Error(`Model "${TARGET_MODEL_DISPLAY_NAME}" is not available for this API key/project.`);
-      }
-
-      const selectedModel = TARGET_MODEL_API_IDS.find(
-        (id) => normalizeModelName(matchedModel.name).toLowerCase() === id.toLowerCase(),
-      ) || TARGET_MODEL_API_IDS[0];
-
-      if (!isValidGeminiModelId(selectedModel)) {
-        throw new Error(`Resolved model ID is invalid: ${selectedModel}`);
-      }
-      console.log('Using Gemini model:', { selectedModel, sourceName: matchedModel.name, sourceDisplayName: matchedModel.displayName });
-
-      let response;
-      let lastError: unknown = null;
-      const modelFormatCandidates = getModelFormatCandidates(selectedModel);
-
-      for (const modelFormat of modelFormatCandidates) {
-        for (let attempt = 0; attempt <= MAX_QUOTA_RETRIES; attempt++) {
-          try {
-            const config: { temperature: number; systemInstruction?: string } = {
-              temperature: 0.2,
-            };
-            if (supportsDeveloperInstruction(modelFormat)) {
-              config.systemInstruction = SYSTEM_INSTRUCTION;
-            }
-
-            response = await ai.models.generateContent({
-              model: modelFormat,
-              contents: requestContents,
-              config,
-            });
-            break;
-          } catch (err) {
-            lastError = err;
-            const message = extractErrorMessage(err);
-
-            if (/developer instruction is not enabled/i.test(message)) {
-              response = await ai.models.generateContent({
-                model: modelFormat,
-                contents: requestContents,
-                config: { temperature: 0.2 },
-              });
-              break;
-            }
-
-            const retryMs = extractRetryDelayMs(message);
-            const canRetrySameModel = isQuotaExceededError(message) && retryMs !== null && attempt < MAX_QUOTA_RETRIES;
-
-            if (canRetrySameModel) {
-              await delay(retryMs + 500);
-              continue;
-            }
-
-            if (/generatecontentrequest\.model|unexpected model name format/i.test(message)) {
-              break;
-            }
-
-            throw err;
-          }
-        }
-
-        if (response) {
-          console.log('Using Gemini model format:', modelFormat);
-          break;
-        }
-      }
-
-      if (!response) {
-        throw lastError;
-      }
 
       let html = response.text || '';
       
@@ -289,16 +103,21 @@ CRITICAL REQUIREMENTS:
       }
       
       setGeneratedHtml(html);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Generation error:', err);
-      setError(formatGenerationError(err));
+      setError(err.message || 'An error occurred while generating the resume.');
     } finally {
       setIsGenerating(false);
     }
   };
 
   const handlePrint = () => {
-    window.print();
+    if (iframeRef.current?.contentWindow) {
+      iframeRef.current.contentWindow.focus();
+      iframeRef.current.contentWindow.print();
+    } else {
+      window.print();
+    }
   };
 
   return (
@@ -467,15 +286,17 @@ CRITICAL REQUIREMENTS:
             <div className="bg-gray-200/50 rounded-xl p-4 sm:p-8 flex-grow flex justify-center overflow-x-auto border border-gray-200 print:p-0 print:border-none print:bg-transparent">
               {generatedHtml ? (
                 activeTab === 'preview' ? (
-                  <div 
-                    id="printable-resume"
+                  <iframe 
+                    ref={iframeRef}
+                    title="Generated Resume"
+                    srcDoc={generatedHtml}
                     className="bg-white shadow-2xl print:shadow-none"
                     style={{ 
                       width: '210mm', 
-                      minHeight: '297mm',
+                      height: '297mm',
+                      border: 'none',
                       transformOrigin: 'top center',
                     }}
-                    dangerouslySetInnerHTML={{ __html: generatedHtml }}
                   />
                 ) : (
                   <textarea
